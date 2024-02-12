@@ -4,6 +4,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 import torchvision
+# from mpmath.identification import transforms
 from torchvision import *
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
@@ -16,22 +17,28 @@ use_wandb = False
 use_cuda = True
 batch_size = 128
 learning_rate = 5e-2
-num_classes = 131
+num_classes = 5
 n_epochs = 5
 dataset_path = "D:/datasets/archive/fruits-360_dataset/fruits-360/"
+dataset_path = "e:/DVP3/merged/"
 
 if use_wandb:
-    project_name = f'resnet{50}'
+    project_name = f'resnet_for_mitotic{50}'
     wandb.init(project=project_name)
 
 transforms = transforms.Compose(
     [
-        transforms.ToTensor()
         # transforms.Resize(64)
+        #transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0]),
+        #transforms.ToTensor()
+
+        transforms.ToTensor(),
+        transforms.RandomHorizontalFlip(),
+        transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0]),
     ])
 
-train_dataset = datasets.ImageFolder(root=f'{dataset_path}Training', transform=transforms)
-test_dataset = datasets.ImageFolder(root=f'{dataset_path}Test', transform=transforms)
+train_dataset = datasets.ImageFolder(root=f'{dataset_path}train', transform=transforms)
+test_dataset = datasets.ImageFolder(root=f'{dataset_path}test', transform=transforms)
 
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
@@ -55,7 +62,9 @@ def imshow(inp, title=None):
         plt.title(title)
     plt.pause(0.001)
 
-
+def accuracy(out, labels):
+    _, pred = torch.max(out, dim=1)
+    return torch.sum(pred == labels).item()
 #
 # images, labels = next(iter(train_dataloader))
 # print("images-size:", images.shape)
@@ -66,22 +75,39 @@ def imshow(inp, title=None):
 # imshow(out, title=[train_dataset.classes[x] for x in labels])
 
 
+# Load the pre-trained ResNet50 model
 net = models.resnet50(pretrained=True)
-net = net.cuda() if device else net.cpu()
 
+# Move the model to CUDA if available
+if use_cuda:
+    net = net.cuda()
+else:
+    net = net.cpu()
+
+# Modify the last fully connected layer
+num_ftrs = net.fc.in_features
+net.fc = nn.Linear(num_ftrs, num_classes)
+
+# Move the model to CUDA if available
+if use_cuda:
+    net.fc = net.fc.cuda()
+
+# Define the loss function
 criterion = nn.CrossEntropyLoss()
+
+# Define the optimizer
 optimizer = optim.SGD(net.parameters(), lr=0.0001, momentum=0.9)
 
 
-def accuracy(out, labels):
-    _, pred = torch.max(out, dim=1)
-    return torch.sum(pred == labels).item()
-
-
-num_ftrs = net.fc.in_features
-net.fc = nn.Linear(num_ftrs, num_classes)
-net.fc = net.fc.cuda() if use_cuda else net.fc
-
+#
+# num_ftrs = net.fc.in_features
+# net.fc = nn.Linear(num_ftrs, num_classes)
+# net.fc = nn.Softmax(num_classes)
+# net.fc = net.fc.cuda() if use_cuda else net.fc
+# if use_cuda:
+#     net.fc =net.fc.cuda()
+# else:
+#     net.fc = net.fc
 print_every = 10
 valid_loss_min = np.Inf
 val_loss = []
@@ -91,6 +117,9 @@ train_acc = []
 total_step = len(train_dataloader)
 net.train()
 print(device)
+
+
+
 for epoch in range(1, n_epochs + 1):
     running_loss = 0.0
     correct = 0
@@ -136,14 +165,17 @@ for epoch in range(1, n_epochs + 1):
         val_acc.append(100 * correct_t / total_t)
         val_loss.append(batch_loss / len(test_dataloader))
         network_learned = batch_loss < valid_loss_min
-        wandb.log({"validation loss": np.mean(val_loss)})
-        wandb.log({f"validation acc": (100 * correct_t / total_t)})
+        if use_wandb:
+            wandb.log({"validation loss": np.mean(val_loss)})
+            wandb.log({f"validation acc": (100 * correct_t / total_t)})
         print(f'validation loss: {np.mean(val_loss):.4f}, validation acc: {(100 * correct_t / total_t):.4f}\n')
 
         if network_learned:
             valid_loss_min = batch_loss
             torch.save(net.state_dict(), 'resnet_best.pt')
     net.train()
+
+
 
 # fig = plt.figure(figsize=(20,10))
 # plt.title("Train-Validation Accuracy")
