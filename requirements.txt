@@ -1,6 +1,6 @@
-torch~=1.10.0+cu113
+torch==1.10.0
 numpy~=1.24.2
-torchvision~=0.11.1+cu113
+torchvision==0.11.1
 wandb~=0.14.0
 matplotlib~=3.7.1
 tqdm~=4.65.0

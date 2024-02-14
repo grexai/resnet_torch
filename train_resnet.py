@@ -1,3 +1,5 @@
+from comet_ml import Experiment
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -10,38 +12,54 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 import wandb
 import matplotlib.pyplot as plt
+from torch.optim.lr_scheduler import MultiStepLR
+
 
 """PARAMETERS"""
 
 use_wandb = False
 use_cuda = True
-batch_size = 128
-learning_rate = 5e-2
+batch_size = 512
+learning_rate = 1e-3
 num_classes = 5
-n_epochs = 5
+n_epochs = 100
 dataset_path = "D:/datasets/archive/fruits-360_dataset/fruits-360/"
 dataset_path = "e:/DVP3/merged/"
-
+dataset_path = "/storage01/grexai/datasets/DVP3/Mitotic5class_merged/"
 if use_wandb:
-    project_name = f'resnet_for_mitotic{50}'
+    project_name = f'resnet{50}_for_mitotic'
     wandb.init(project=project_name)
-
-transforms = transforms.Compose(
+else:
+    experiment = Experiment(api_key="cfPvvHqzmKpiAK5gljgCjdJCQ", project_name="ResNet50_mitotic5class")
+experiment.set_name("ResNet mitotic 5 Class aug")
+transforms_train = transforms.Compose(
     [
         # transforms.Resize(64)
-        #transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0]),
-        #transforms.ToTensor()
-
+        transforms.RandomAffine(degrees=(30, 70), translate=(0.05, 0.15), scale=(0.95, 1.05)),
+        transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.9, 1.1)),
+        transforms.RandomAdjustSharpness(sharpness_factor=1.5),
+        transforms.ColorJitter(brightness=.8, hue=.1),
+        transforms.CenterCrop(128),
         transforms.ToTensor(),
         transforms.RandomHorizontalFlip(),
-        transforms.Normalize(mean=[0.0, 0.0, 0.0], std=[1.0, 1.0, 1.0]),
+        transforms.RandomVerticalFlip(),
+        transforms.Normalize(mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225]),
     ])
 
-train_dataset = datasets.ImageFolder(root=f'{dataset_path}train', transform=transforms)
-test_dataset = datasets.ImageFolder(root=f'{dataset_path}test', transform=transforms)
+
+transforms_val = transforms.Compose(
+    [
+        transforms.ToTensor(),
+        transforms.CenterCrop(128),
+        transforms.Normalize(mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225]),
+    ])
+
+
+train_dataset = datasets.ImageFolder(root=f'{dataset_path}train', transform=transforms_train)
+test_dataset = datasets.ImageFolder(root=f'{dataset_path}val', transform=transforms_val)
 
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
+test_dataloader = DataLoader(test_dataset, batch_size=batch_size)
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 if not use_cuda:
@@ -96,9 +114,8 @@ if use_cuda:
 criterion = nn.CrossEntropyLoss()
 
 # Define the optimizer
-optimizer = optim.SGD(net.parameters(), lr=0.0001, momentum=0.9)
-
-
+# optimizer = optim.SGD(net.parameters(), learning_rate, momentum=0.9)
+optimizer = optim.Adam(net.parameters(), learning_rate)
 #
 # num_ftrs = net.fc.in_features
 # net.fc = nn.Linear(num_ftrs, num_classes)
@@ -119,13 +136,19 @@ net.train()
 print(device)
 
 
-
-for epoch in range(1, n_epochs + 1):
+scheduler = MultiStepLR(optimizer, milestones=[20,50,80], gamma=0.1)
+# scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=0.01, steps_per_epoch=len(train_dataloader), epochs=n_epochs)
+#print(scheduler.get_last_lr())
+validation_acc = 0
+train_accuracy = 0
+train_loss_current = []
+for epoch in tqdm(range(1, n_epochs + 1), desc=f"learning rate {optimizer.param_groups[-1]['lr']:.6f}"):
     running_loss = 0.0
     correct = 0
     total = 0
-    print(f'Epoch {epoch}\n')
-    for batch_idx, (data_, target_) in enumerate(train_dataloader):
+
+    dataset_len = len(train_dataloader)
+    for batch_idx, (data_, target_) in tqdm(enumerate(train_dataloader),maxinterval=dataset_len):
         data_, target_ = data_.to(device), target_.to(device)
         optimizer.zero_grad()
 
@@ -133,7 +156,8 @@ for epoch in range(1, n_epochs + 1):
         loss = criterion(outputs, target_)
         loss.backward()
         optimizer.step()
-
+        
+        
         running_loss += loss.item()
         _, pred = torch.max(outputs, dim=1)
 
@@ -141,13 +165,14 @@ for epoch in range(1, n_epochs + 1):
         total += target_.size(0)
         if use_wandb:
             wandb.log({"train loss": loss.item()})
-        if (batch_idx) % 20 == 0:
-            print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'
-                  .format(epoch, n_epochs, batch_idx, total_step, loss.item()))
+        # if (batch_idx) % 20 == 0:
+        #     print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'
+        #           .format(epoch, n_epochs, batch_idx, total_step, loss.item()))
     train_acc.append(100 * correct / total)
     train_loss.append(running_loss / total_step)
-
-    print(f'\ntrain-loss: {np.mean(train_loss):.4f}, train-acc: {(100 * correct / total):.4f}')
+    train_accuracy = 100 * correct / total
+    train_loss_current = running_loss / total_step
+    # print(f'\ntrain-loss: {np.mean(train_loss):.4f}, train-acc: {(100 * correct / total):.4f}')
 
     batch_loss = 0
     total_t = 0
@@ -168,12 +193,19 @@ for epoch in range(1, n_epochs + 1):
         if use_wandb:
             wandb.log({"validation loss": np.mean(val_loss)})
             wandb.log({f"validation acc": (100 * correct_t / total_t)})
-        print(f'validation loss: {np.mean(val_loss):.4f}, validation acc: {(100 * correct_t / total_t):.4f}\n')
+        else:
+            experiment.log_metric("train loss", loss.item())
+            experiment.log_metric("validation loss", np.mean(val_loss))
+            experiment.log_metric("validation acc", (100 * correct_t / total_t))
+        validation_acc = 100 * correct_t / total_t
+        
+        # print(f'validation loss: {np.mean(val_loss):.4f}, validation acc: {(100 * correct_t / total_t):.4f}\n')
 
         if network_learned:
             valid_loss_min = batch_loss
-            torch.save(net.state_dict(), 'resnet_best.pt')
+            torch.save(net.state_dict(), 'resnet50_aug_best.pt')
     net.train()
+    scheduler.step()
 
 
 
